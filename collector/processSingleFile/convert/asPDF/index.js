@@ -3,6 +3,7 @@ const {
   createdDate,
   trashFile,
   writeToServerDocuments,
+  moveToOriginalPdfs,
 } = require("../../../utils/files");
 const { tokenizeString } = require("../../../utils/tokenizer");
 const { default: slugify } = require("slugify");
@@ -21,6 +22,7 @@ async function asPdf({
 
   console.log(`-- Working ${filename} --`);
   const pageContent = [];
+  const pageData = []; // Store page-level data for metadata
   let docs = await pdfLoader.load();
 
   if (docs.length === 0) {
@@ -33,13 +35,17 @@ async function asPdf({
   }
 
   for (const doc of docs) {
-    console.log(
-      `-- Parsing content from pg ${
-        doc.metadata?.loc?.pageNumber || "unknown"
-      } --`
-    );
+    const pageNum = doc.metadata?.loc?.pageNumber || "unknown";
+    console.log(`-- Parsing content from pg ${pageNum} --`);
     if (!doc.pageContent || !doc.pageContent.length) continue;
     pageContent.push(doc.pageContent);
+    // Store page data for later use
+    pageData.push({
+      pageNumber: pageNum,
+      content: doc.pageContent,
+      charStart: pageContent.slice(0, -1).join("").length,
+      charEnd: pageContent.join("").length,
+    });
   }
 
   if (!pageContent.length) {
@@ -52,9 +58,24 @@ async function asPdf({
     };
   }
 
+  const docId = v4();
   const content = pageContent.join("");
+  const pdfFilename = `${slugify(filename)}-${docId}.pdf`;
+  
+  // Get the created date BEFORE moving the file
+  const publishedDate = createdDate(fullFilePath);
+  
+  // Move original PDF to permanent storage for viewing (this also removes from hotdir)
+  const originalPdfFilename = moveToOriginalPdfs(fullFilePath, pdfFilename);
+  
+  // If move failed, trash the file manually
+  if (!originalPdfFilename) {
+    console.log(`[asPDF] Could not preserve original PDF, trashing...`);
+    trashFile(fullFilePath);
+  }
+  
   const data = {
-    id: v4(),
+    id: docId,
     url: "file://" + fullFilePath,
     title: metadata.title || filename,
     docAuthor:
@@ -67,10 +88,14 @@ async function asPdf({
       "No description found.",
     docSource: metadata.docSource || "pdf file uploaded by the user.",
     chunkSource: metadata.chunkSource || "",
-    published: createdDate(fullFilePath),
+    published: publishedDate,
     wordCount: content.split(" ").length,
     pageContent: content,
     token_count_estimate: tokenizeString(content),
+    // Store filename of original PDF for viewing (just the filename, not full path)
+    originalPdfFilename: originalPdfFilename,
+    totalPages: docs.length,
+    pageData: pageData, // Store page mapping for navigation
   };
 
   const document = writeToServerDocuments({
@@ -78,7 +103,6 @@ async function asPdf({
     filename: `${slugify(filename)}-${data.id}`,
     options: { parseOnly: options.parseOnly },
   });
-  trashFile(fullFilePath);
   console.log(`[SUCCESS]: ${filename} converted & ready for embedding.\n`);
   return { success: true, reason: null, documents: [document] };
 }

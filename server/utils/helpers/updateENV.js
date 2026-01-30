@@ -1185,7 +1185,8 @@ async function updateENV(newENVs = {}, force = false, userId = null) {
     await runAfterAllFunc(newValues, userId);
 
   await logChangesToEventLog(newValues, userId);
-  if (process.env.NODE_ENV === "production") dumpENV();
+  // Always save settings to disk (production uses .env, development uses .env.development)
+  dumpENV();
   return { newValues, error: error?.length > 0 ? error : false };
 }
 
@@ -1294,7 +1295,9 @@ function dumpENV() {
     .map(([key, value]) => `${key}='${sanitizeValue(value)}'`)
     .join("\n");
 
-  const envPath = path.join(__dirname, "../../.env");
+  // In development mode, save to .env.development to match where settings are loaded from
+  const envFileName = process.env.NODE_ENV === "development" ? ".env.development" : ".env";
+  const envPath = path.join(__dirname, `../../${envFileName}`);
   fs.writeFileSync(envPath, envResult, { encoding: "utf8", flag: "w" });
   return true;
 }

@@ -5,6 +5,10 @@ const { Telemetry } = require("./telemetry");
 const { EventLogs } = require("./eventLogs");
 const { safeJsonParse } = require("../utils/http");
 const { getModelTag } = require("../endpoints/utils");
+const {
+  extractHistoricalDates,
+  isExtractionAvailable,
+} = require("../utils/historicalDateExtractor");
 
 const Document = {
   writable: ["pinned", "watched", "lastUpdatedAt"],
@@ -94,12 +98,41 @@ const Document = {
 
       const docId = uuidv4();
       const { pageContent, ...metadata } = data;
+
+      // Historical Date Extraction: Automatically extract dates from document text
+      // This enriches the metadata with temporal_points for the Historical Research Workbench
+      let enrichedMetadata = { ...metadata };
+      if (isExtractionAvailable() && pageContent) {
+        try {
+          const historicalData = await extractHistoricalDates(pageContent, {
+            title: metadata?.title || path.split("/")[1],
+            pageData: metadata?.pageData || null, // Pass page boundary data if available
+            totalPages: metadata?.totalPages || null, // Pass total pages for estimation
+          });
+          if (historicalData && historicalData.temporal_points?.length > 0) {
+            enrichedMetadata = {
+              ...enrichedMetadata,
+              historical_metadata: historicalData,
+            };
+            console.log(
+              `[Document] Enriched "${metadata?.title}" with ${historicalData.temporal_points.length} historical dates.`
+            );
+          }
+        } catch (extractionError) {
+          // Fail silently - log but don't stop document processing
+          console.error(
+            `[Document] Historical date extraction failed for "${metadata?.title}":`,
+            extractionError.message
+          );
+        }
+      }
+
       const newDoc = {
         docId,
         filename: path.split("/")[1],
         docpath: path,
         workspaceId: workspace.id,
-        metadata: JSON.stringify(metadata),
+        metadata: JSON.stringify(enrichedMetadata),
       };
 
       const { vectorized, error } = await VectorDb.addDocumentToNamespace(
@@ -111,9 +144,9 @@ const Document = {
       if (!vectorized) {
         console.error(
           "Failed to vectorize",
-          metadata?.title || newDoc.filename
+          enrichedMetadata?.title || newDoc.filename
         );
-        failedToEmbed.push(metadata?.title || newDoc.filename);
+        failedToEmbed.push(enrichedMetadata?.title || newDoc.filename);
         errors.add(error);
         continue;
       }

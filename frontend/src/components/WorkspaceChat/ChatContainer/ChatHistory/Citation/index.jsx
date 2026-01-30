@@ -14,6 +14,7 @@ import {
   YoutubeLogo,
   LinkSimple,
   GitlabLogo,
+  BookOpenText,
 } from "@phosphor-icons/react";
 import ConfluenceLogo from "@/media/dataConnectors/confluence.png";
 import DrupalWikiLogo from "@/media/dataConnectors/drupalwiki.png";
@@ -23,6 +24,7 @@ import { toPercentString } from "@/utils/numbers";
 import { useTranslation } from "react-i18next";
 import pluralize from "pluralize";
 import useTextSize from "@/hooks/useTextSize";
+import { getPageFromChunk, openDocumentViewer } from "@/components/DocumentViewerModal";
 
 function combineLikeSources(sources) {
   const combined = {};
@@ -131,81 +133,130 @@ function CitationDetailModal({ source, onClose }) {
   const { references, title, chunks } = source;
   const { isUrl, text: webpageUrl, href: linkTo } = parseChunkSource(source);
 
-  return (
-    <ModalWrapper isOpen={source}>
-      <div className="w-full max-w-2xl bg-theme-bg-secondary rounded-lg shadow border-2 border-theme-modal-border overflow-hidden">
-        <div className="relative p-6 border-b rounded-t border-theme-modal-border">
-          <div className="w-full flex gap-x-2 items-center">
-            {isUrl ? (
-              <a
-                href={linkTo}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xl w-[90%] font-semibold text-white whitespace-nowrap hover:underline hover:text-blue-300 flex items-center gap-x-1"
-              >
-                <div className="flex items-center gap-x-1 max-w-full overflow-hidden">
-                  <h3 className="truncate text-ellipsis whitespace-nowrap overflow-hidden w-full">
-                    {webpageUrl}
-                  </h3>
-                  <ArrowSquareOut className="flex-shrink-0" />
-                </div>
-              </a>
-            ) : (
-              <h3 className="text-xl font-semibold text-white overflow-hidden overflow-ellipsis whitespace-nowrap">
-                {truncate(title, 45)}
-              </h3>
-            )}
-          </div>
-          {references > 1 && (
-            <p className="text-xs text-gray-400 mt-2">
-              Referenced {references} times.
-            </p>
-          )}
-          <button
-            onClick={onClose}
-            type="button"
-            className="absolute top-4 right-4 transition-all duration-300 bg-transparent rounded-lg text-sm p-1 inline-flex items-center hover:bg-theme-modal-border hover:border-theme-modal-border hover:border-opacity-50 border-transparent border"
-          >
-            <X size={24} weight="bold" className="text-white" />
-          </button>
-        </div>
-        <div
-          className="h-full w-full overflow-y-auto"
-          style={{ maxHeight: "calc(100vh - 200px)" }}
-        >
-          <div className="py-7 px-9 space-y-2 flex-col">
-            {chunks.map(({ text, score }, idx) => (
-              <>
-                <div key={idx} className="pt-6 text-white">
-                  <div className="flex flex-col w-full justify-start pb-6 gap-y-1">
-                    <p className="text-white whitespace-pre-line">
-                      {HTMLDecode(omitChunkHeader(text))}
-                    </p>
+  // Get page info from first chunk if available
+  const firstChunkPage = chunks.length > 0 ? getPageFromChunk(chunks[0]) : null;
+  const hasPageInfo = chunks.some(chunk => getPageFromChunk(chunk) !== null);
+  
+  // Try to get PDF filename from chunk metadata
+  const getPdfFilename = () => {
+    for (const chunk of chunks) {
+      const metadata = chunk.metadata || {};
+      if (metadata.originalPdfFilename) return metadata.originalPdfFilename;
+    }
+    return null;
+  };
+  
+  const pdfFilename = getPdfFilename();
 
-                    {!!score && (
-                      <div className="w-full flex items-center text-xs text-white/60 gap-x-2 cursor-default">
-                        <div
-                          data-tooltip-id="similarity-score"
-                          data-tooltip-content={`This is the semantic similarity score of this chunk of text compared to your query calculated by the vector database.`}
-                          className="flex items-center gap-x-1"
-                        >
-                          <Info size={14} />
-                          <p>{toPercentString(score)} match</p>
-                        </div>
+  // Open document viewer to a specific page (uses global event)
+  const handleOpenDocViewer = (page = null) => {
+    openDocumentViewer(title, pdfFilename, page, null);
+  };
+
+  return (
+    <>
+      <ModalWrapper isOpen={source}>
+        <div className="w-full max-w-2xl bg-theme-bg-secondary rounded-lg shadow border-2 border-theme-modal-border overflow-hidden">
+          <div className="relative p-6 border-b rounded-t border-theme-modal-border">
+            <div className="w-full flex gap-x-2 items-center">
+              {isUrl ? (
+                <a
+                  href={linkTo}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xl w-[90%] font-semibold text-white whitespace-nowrap hover:underline hover:text-blue-300 flex items-center gap-x-1"
+                >
+                  <div className="flex items-center gap-x-1 max-w-full overflow-hidden">
+                    <h3 className="truncate text-ellipsis whitespace-nowrap overflow-hidden w-full">
+                      {webpageUrl}
+                    </h3>
+                    <ArrowSquareOut className="flex-shrink-0" />
+                  </div>
+                </a>
+              ) : (
+                <h3 className="text-xl font-semibold text-white overflow-hidden overflow-ellipsis whitespace-nowrap">
+                  {truncate(title, 45)}
+                </h3>
+              )}
+            </div>
+            <div className="flex items-center gap-3 mt-2">
+              {references > 1 && (
+                <p className="text-xs text-gray-400">
+                  Referenced {references} times.
+                </p>
+              )}
+              {(hasPageInfo || pdfFilename) && (
+                <button
+                  onClick={() => handleOpenDocViewer(firstChunkPage)}
+                  className="flex items-center gap-1 text-xs text-[#46c8ff] hover:text-[#46c8ff]/80 transition-colors"
+                >
+                  <BookOpenText size={14} weight="bold" />
+                  View full document
+                </button>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              type="button"
+              className="absolute top-4 right-4 transition-all duration-300 bg-transparent rounded-lg text-sm p-1 inline-flex items-center hover:bg-theme-modal-border hover:border-theme-modal-border hover:border-opacity-50 border-transparent border"
+            >
+              <X size={24} weight="bold" className="text-white" />
+            </button>
+          </div>
+          <div
+            className="h-full w-full overflow-y-auto"
+            style={{ maxHeight: "calc(100vh - 200px)" }}
+          >
+            <div className="py-7 px-9 space-y-2 flex-col">
+              {chunks.map((chunk, idx) => {
+                const { text, score } = chunk;
+                const pageNum = getPageFromChunk(chunk);
+                
+                return (
+                  <div key={idx}>
+                    <div className="pt-6 text-white">
+                      <div className="flex flex-col w-full justify-start pb-6 gap-y-1">
+                        {/* Page indicator with click to view */}
+                        {pageNum && (
+                          <button
+                            onClick={() => handleOpenDocViewer(pageNum)}
+                            className="flex items-center gap-1 text-xs text-amber-400/80 hover:text-amber-400 mb-2 w-fit transition-colors"
+                          >
+                            <BookOpenText size={12} weight="fill" />
+                            Page {pageNum} — Click to view in context
+                          </button>
+                        )}
+                        
+                        <p className="text-white whitespace-pre-line">
+                          {HTMLDecode(omitChunkHeader(text))}
+                        </p>
+
+                        {!!score && (
+                          <div className="w-full flex items-center text-xs text-white/60 gap-x-2 cursor-default">
+                            <div
+                              data-tooltip-id="similarity-score"
+                              data-tooltip-content={`This is the semantic similarity score of this chunk of text compared to your query calculated by the vector database.`}
+                              className="flex items-center gap-x-1"
+                            >
+                              <Info size={14} />
+                              <p>{toPercentString(score)} match</p>
+                            </div>
+                          </div>
+                        )}
                       </div>
+                    </div>
+                    {idx !== chunks.length - 1 && (
+                      <hr className="border-theme-modal-border" />
                     )}
                   </div>
-                </div>
-                {idx !== chunks.length - 1 && (
-                  <hr className="border-theme-modal-border" />
-                )}
-              </>
-            ))}
-            <div className="mb-6"></div>
+                );
+              })}
+              <div className="mb-6"></div>
+            </div>
           </div>
         </div>
-      </div>
-    </ModalWrapper>
+      </ModalWrapper>
+    </>
   );
 }
 

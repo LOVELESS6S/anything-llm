@@ -9,8 +9,63 @@ const { validatedRequest } = require("../utils/middleware/validatedRequest");
 const fs = require("fs");
 const path = require("path");
 
+// Path to original PDFs storage
+const originalPdfsPath =
+  process.env.NODE_ENV === "development"
+    ? path.resolve(__dirname, "../storage/original-pdfs")
+    : path.resolve(process.env.STORAGE_DIR, "original-pdfs");
+
 function documentEndpoints(app) {
   if (!app) return;
+
+  /**
+   * Serve an original PDF file for viewing
+   * GET /document/pdf/:filename
+   */
+  app.get(
+    "/document/pdf/:filename",
+    [validatedRequest, flexUserRoleValid([ROLES.all])],
+    async (request, response) => {
+      try {
+        const { filename } = request.params;
+        const sanitizedFilename = normalizePath(filename);
+        const pdfPath = path.join(originalPdfsPath, sanitizedFilename);
+
+        // Security check - ensure path is within original-pdfs folder
+        if (!isWithin(path.resolve(originalPdfsPath), path.resolve(pdfPath))) {
+          return response.status(403).json({ 
+            success: false, 
+            error: "Access denied" 
+          });
+        }
+
+        if (!fs.existsSync(pdfPath)) {
+          return response.status(404).json({ 
+            success: false, 
+            error: "PDF file not found" 
+          });
+        }
+
+        const stat = fs.statSync(pdfPath);
+        
+        response.writeHead(200, {
+          "Content-Type": "application/pdf",
+          "Content-Length": stat.size,
+          "Content-Disposition": `inline; filename="${sanitizedFilename}"`,
+          "Cache-Control": "public, max-age=31536000", // Cache for 1 year
+        });
+
+        const readStream = fs.createReadStream(pdfPath);
+        readStream.pipe(response);
+      } catch (e) {
+        console.error("[PDF Serve Error]", e);
+        response.status(500).json({ 
+          success: false, 
+          error: "Failed to serve PDF" 
+        });
+      }
+    }
+  );
   app.post(
     "/document/create-folder",
     [validatedRequest, flexUserRoleValid([ROLES.admin, ROLES.manager])],

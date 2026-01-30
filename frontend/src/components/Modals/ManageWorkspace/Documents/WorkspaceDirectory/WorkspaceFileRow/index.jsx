@@ -1,13 +1,30 @@
-import { memo, useState } from "react";
+import { memo, useState, useEffect } from "react";
 import {
   formatDateTimeAsMoment,
   getFileExtension,
   middleTruncate,
 } from "@/utils/directories";
-import { ArrowUUpLeft, Eye, File, PushPin } from "@phosphor-icons/react";
+import { ArrowUUpLeft, Eye, File, PushPin, Anchor } from "@phosphor-icons/react";
 import Workspace from "@/models/workspace";
 import showToast from "@/utils/toast";
 import System from "@/models/system";
+
+// Helper functions for base file management (stored in localStorage)
+const getBaseFileKey = (workspaceId) => `anythingllm-base-file-${workspaceId}`;
+export const getBaseFile = (workspaceId) => {
+  if (!workspaceId) return null;
+  return window.localStorage.getItem(getBaseFileKey(workspaceId));
+};
+export const setBaseFile = (workspaceId, docPath) => {
+  if (!workspaceId) return false;
+  if (docPath) {
+    window.localStorage.setItem(getBaseFileKey(workspaceId), docPath);
+  } else {
+    window.localStorage.removeItem(getBaseFileKey(workspaceId));
+  }
+  window.dispatchEvent(new CustomEvent("base_file_changed", { detail: { workspaceId, docPath } }));
+  return true;
+};
 
 export default function WorkspaceFileRow({
   item,
@@ -107,6 +124,11 @@ export default function WorkspaceFileRow({
               docPath={`${folderName}/${item.name}`}
               item={item}
             />
+            <SetAsBaseFile
+              workspace={workspace}
+              docPath={`${folderName}/${item.name}`}
+              item={item}
+            />
             <PinItemToWorkspace
               workspace={workspace}
               docPath={`${folderName}/${item.name}`}
@@ -119,6 +141,68 @@ export default function WorkspaceFileRow({
     </div>
   );
 }
+
+const SetAsBaseFile = memo(({ workspace, docPath, item }) => {
+  const [isBase, setIsBase] = useState(false);
+
+  useEffect(() => {
+    const currentBase = getBaseFile(workspace?.id);
+    setIsBase(currentBase === docPath);
+
+    // Listen for base file changes
+    const handleBaseFileChange = (e) => {
+      if (e.detail?.workspaceId === workspace?.id) {
+        setIsBase(e.detail?.docPath === docPath);
+      }
+    };
+    window.addEventListener("base_file_changed", handleBaseFileChange);
+    return () => window.removeEventListener("base_file_changed", handleBaseFileChange);
+  }, [workspace?.id, docPath]);
+
+  const toggleBaseFile = (e) => {
+    e.stopPropagation();
+    const newIsBase = !isBase;
+    setBaseFile(workspace?.id, newIsBase ? docPath : null);
+    showToast(
+      newIsBase
+        ? "Document set as Base File (Primary Source)"
+        : "Base File designation removed",
+      "success",
+      { clear: true }
+    );
+  };
+
+  if (!item) return <div className="w-[16px] p-[2px] ml-2" />;
+
+  return (
+    <div
+      onClick={toggleBaseFile}
+      className="group flex items-center ml-2 cursor-pointer"
+      data-tooltip-id="base-file"
+      data-tooltip-content={
+        isBase ? "Remove as Base File" : "Set as Base File (Primary Source)"
+      }
+    >
+      {isBase ? (
+        <div className="bg-amber-500/20 group-hover:bg-red-500/20 rounded-3xl whitespace-nowrap">
+          <p className="text-xs px-2 py-0.5 text-amber-400 group-hover:text-red-500">
+            <span className="group-hover:hidden flex items-center gap-1">
+              <Anchor size={12} weight="fill" />
+              Base
+            </span>
+            <span className="hidden group-hover:inline">Remove</span>
+          </p>
+        </div>
+      ) : (
+        <Anchor
+          size={16}
+          weight="regular"
+          className="outline-none text-base font-bold flex-shrink-0 hover:text-amber-400 transition-colors"
+        />
+      )}
+    </div>
+  );
+});
 
 const PinItemToWorkspace = memo(({ workspace, docPath, item }) => {
   const [pinned, setPinned] = useState(

@@ -22,6 +22,14 @@ const directUploadsFolder =
     : path.resolve(process.env.STORAGE_DIR, `direct-uploads`);
 
 /**
+ * The folder where original PDF files are stored for viewing.
+ */
+const originalPdfsFolder =
+  process.env.NODE_ENV === "development"
+    ? path.resolve(__dirname, `../../../server/storage/original-pdfs`)
+    : path.resolve(process.env.STORAGE_DIR, `original-pdfs`);
+
+/**
  * Checks if a file is text by checking the mime type and then falling back to buffer inspection.
  * This way we can capture all the cases where the mime type is not known but still parseable as text
  * without having to constantly add new mime type overrides.
@@ -214,6 +222,52 @@ function sanitizeFileName(fileName) {
   return fileName.replace(/[<>:"\/\\|?*]/g, "");
 }
 
+/**
+ * Moves a PDF file to the original-pdfs folder for later viewing.
+ * This preserves the original file instead of deleting it after processing.
+ * @param {string} sourcePath - The full path to the source PDF file.
+ * @param {string} destFilename - The desired filename for the moved file.
+ * @returns {string|null} - The relative path to the moved file, or null if move failed.
+ */
+function moveToOriginalPdfs(sourcePath, destFilename) {
+  try {
+    if (!fs.existsSync(sourcePath)) {
+      console.log(`[moveToOriginalPdfs] Source file does not exist: ${sourcePath}`);
+      return null;
+    }
+
+    if (!fs.existsSync(originalPdfsFolder)) {
+      fs.mkdirSync(originalPdfsFolder, { recursive: true });
+    }
+
+    const safeFilename = sanitizeFileName(destFilename);
+    const destPath = path.resolve(originalPdfsFolder, safeFilename);
+    
+    // Move the file (rename) instead of copy
+    fs.renameSync(sourcePath, destPath);
+    console.log(`[moveToOriginalPdfs] Moved original PDF to: ${destPath}`);
+    
+    // Return the filename that can be used to serve the file
+    return safeFilename;
+  } catch (error) {
+    // If rename fails (cross-device), fall back to copy + delete
+    try {
+      const safeFilename = sanitizeFileName(destFilename);
+      const destPath = path.resolve(originalPdfsFolder, safeFilename);
+      fs.copyFileSync(sourcePath, destPath);
+      fs.unlinkSync(sourcePath);
+      console.log(`[moveToOriginalPdfs] Copied original PDF to: ${destPath}`);
+      return safeFilename;
+    } catch (copyError) {
+      console.error(`[moveToOriginalPdfs] Error moving PDF: ${copyError.message}`);
+      return null;
+    }
+  }
+}
+
+// Alias for backwards compatibility
+const copyToOriginalPdfs = moveToOriginalPdfs;
+
 module.exports = {
   trashFile,
   isTextType,
@@ -223,6 +277,9 @@ module.exports = {
   normalizePath,
   isWithin,
   sanitizeFileName,
+  moveToOriginalPdfs,
+  copyToOriginalPdfs, // alias
   documentsFolder,
   directUploadsFolder,
+  originalPdfsFolder,
 };
