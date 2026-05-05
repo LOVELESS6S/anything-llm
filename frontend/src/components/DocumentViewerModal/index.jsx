@@ -409,9 +409,14 @@ export function openDocumentViewer(title, pdfFilename, page = null, totalPages =
 /**
  * GlobalDocumentViewer - A self-contained document viewer that listens for global events
  * Add this component once at the app root level (App.jsx) to enable document viewing from anywhere
+ * 
+ * Supports two modes:
+ * 1. Direct: when pdfFilename is provided
+ * 2. Search by title: when searchByTitle is true, looks up document by title
  */
 export function GlobalDocumentViewer() {
   const [isOpen, setIsOpen] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [viewerProps, setViewerProps] = useState({
     title: "",
     pdfFilename: null,
@@ -423,17 +428,48 @@ export function GlobalDocumentViewer() {
 
   // Listen for global document viewer events
   useEffect(() => {
-    const handleOpenViewer = (event) => {
-      const { title, pdfFilename, page, totalPages, chunks, highlight } = event.detail || {};
-      console.log("[GlobalDocumentViewer] Opening:", { title, pdfFilename, page });
+    const handleOpenViewer = async (event) => {
+      const { 
+        title, 
+        pdfFilename, 
+        page, 
+        totalPages, 
+        chunks, 
+        highlight,
+        highlightText,
+        searchByTitle = false 
+      } = event.detail || {};
+      
+      console.log("[GlobalDocumentViewer] Opening:", { title, pdfFilename, page, searchByTitle });
+      
+      // If searchByTitle is true and we don't have a pdfFilename, 
+      // try to find the document by title from stored documents
+      let resolvedPdfFilename = pdfFilename;
+      let resolvedTotalPages = totalPages;
+      
+      if (searchByTitle && !pdfFilename && title) {
+        setIsSearching(true);
+        try {
+          // Try to find the PDF from localStorage cache of workspace documents
+          const cachedDocs = findDocumentByTitle(title);
+          if (cachedDocs) {
+            resolvedPdfFilename = cachedDocs.pdfFilename;
+            resolvedTotalPages = cachedDocs.totalPages || totalPages;
+            console.log("[GlobalDocumentViewer] Found document by title:", cachedDocs);
+          }
+        } catch (e) {
+          console.error("[GlobalDocumentViewer] Error searching by title:", e);
+        }
+        setIsSearching(false);
+      }
       
       setViewerProps({
         title: title || "Document",
-        pdfFilename: pdfFilename || null,
+        pdfFilename: resolvedPdfFilename || null,
         initialPage: page || 1,
-        totalPages: totalPages || null,
+        totalPages: resolvedTotalPages || null,
         chunks: chunks || [],
-        highlightText: highlight || null,
+        highlightText: highlight || highlightText || null,
       });
       setIsOpen(true);
     };
@@ -454,4 +490,96 @@ export function GlobalDocumentViewer() {
       highlightText={viewerProps.highlightText}
     />
   );
+}
+
+/**
+ * Try to find a document's PDF filename by its title
+ * Searches through cached workspace document metadata
+ */
+function findDocumentByTitle(searchTitle) {
+  if (!searchTitle) return null;
+  
+  try {
+    // Normalize the search title - remove .pdf extension and special chars for matching
+    const normalizedSearch = searchTitle
+      .toLowerCase()
+      .trim()
+      .replace(/\.pdf$/i, '')
+      .replace(/[_-]/g, ' ')
+      .replace(/\s+/g, ' ');
+    
+    console.log("[findDocumentByTitle] Searching for:", normalizedSearch);
+    
+    // Helper to check if titles match
+    const titlesMatch = (docTitle) => {
+      if (!docTitle) return false;
+      const normalizedDoc = docTitle
+        .toLowerCase()
+        .trim()
+        .replace(/\.pdf$/i, '')
+        .replace(/[_-]/g, ' ')
+        .replace(/\s+/g, ' ');
+      
+      // Check various match conditions
+      return normalizedDoc === normalizedSearch ||
+             normalizedDoc.includes(normalizedSearch) ||
+             normalizedSearch.includes(normalizedDoc) ||
+             // Also check if significant words match
+             normalizedSearch.split(' ').filter(w => w.length > 3).every(word => normalizedDoc.includes(word));
+    };
+    
+    // First check the current workspace's timeline data (most likely to be correct)
+    const timelineData = window.__workspaceDocuments__;
+    if (Array.isArray(timelineData)) {
+      console.log("[findDocumentByTitle] Checking timeline data with", timelineData.length, "docs");
+      for (const doc of timelineData) {
+        const docTitle = doc.title || doc.name || doc.filename || '';
+        if (titlesMatch(docTitle)) {
+          const metadata = typeof doc.metadata === 'string' ? JSON.parse(doc.metadata) : doc.metadata;
+          console.log("[findDocumentByTitle] Found match in timeline:", docTitle);
+          return {
+            pdfFilename: metadata?.originalPdfFilename || null,
+            totalPages: metadata?.totalPages || null,
+            title: docTitle,
+          };
+        }
+      }
+    }
+    
+    // Search through localStorage for workspace document caches
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key || !key.includes('workspace')) continue;
+      
+      try {
+        const data = localStorage.getItem(key);
+        if (!data) continue;
+        
+        const parsed = JSON.parse(data);
+        const docs = Array.isArray(parsed) ? parsed : (parsed.documents || parsed.items || []);
+        
+        for (const doc of docs) {
+          const docTitle = doc.title || doc.name || doc.filename || '';
+          if (titlesMatch(docTitle)) {
+            const metadata = typeof doc.metadata === 'string' ? JSON.parse(doc.metadata) : doc.metadata;
+            console.log("[findDocumentByTitle] Found match in localStorage:", docTitle);
+            return {
+              pdfFilename: metadata?.originalPdfFilename || null,
+              totalPages: metadata?.totalPages || null,
+              title: docTitle,
+            };
+          }
+        }
+      } catch (e) {
+        // Skip malformed cache entries
+        continue;
+      }
+    }
+    
+    console.log("[findDocumentByTitle] No match found for:", searchTitle);
+    return null;
+  } catch (e) {
+    console.error("[findDocumentByTitle] Error:", e);
+    return null;
+  }
 }

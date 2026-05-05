@@ -333,6 +333,24 @@ export default function HistoricalTimeline({ workspace }) {
     return allItems.filter(item => item.year === selectedYear);
   }, [allItems, selectedYear]);
 
+  // Store document data globally for citation lookups
+  useEffect(() => {
+    if (docMap && Object.keys(docMap).length > 0) {
+      // Store in window for GlobalDocumentViewer to access
+      window.__workspaceDocuments__ = Object.entries(docMap).map(([path, doc]) => ({
+        docpath: path,
+        title: doc.title,
+        name: doc.title,
+        metadata: doc.metadata,
+      }));
+      console.log("[Timeline] Stored", Object.keys(docMap).length, "documents for citation lookup");
+    }
+    return () => {
+      // Cleanup on unmount
+      window.__workspaceDocuments__ = null;
+    };
+  }, [docMap]);
+
   // Initialize vis-timeline
   useEffect(() => {
     if (!containerRef.current || filteredItems.length === 0) {

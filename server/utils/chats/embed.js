@@ -65,20 +65,29 @@ async function streamChatWithForEmbed(
   );
 
   // See stream.js comment for more information on this implementation.
+  // Using pinnedDocsWithPageChunks() for page-level citations on pinned documents.
   await new DocumentManager({
     workspace: embed.workspace,
     maxTokens: LLMConnector.promptWindowLimit(),
   })
-    .pinnedDocs()
-    .then((pinnedDocs) => {
-      pinnedDocs.forEach((doc) => {
-        const { pageContent, ...metadata } = doc;
-        pinnedDocIdentifiers.push(sourceIdentifier(doc));
-        contextTexts.push(doc.pageContent);
+    .pinnedDocsWithPageChunks()
+    .then((pinnedChunks) => {
+      const seenDocIds = new Set();
+      
+      pinnedChunks.forEach((chunk) => {
+        const { pageContent, loc, ...metadata } = chunk;
+        
+        if (metadata.id && !seenDocIds.has(metadata.id)) {
+          pinnedDocIdentifiers.push(sourceIdentifier(chunk));
+          seenDocIds.add(metadata.id);
+        }
+        
+        contextTexts.push(pageContent);
         sources.push({
           text:
             pageContent.slice(0, 1_000) +
             "...continued on in source document...",
+          loc,
           ...metadata,
         });
       });

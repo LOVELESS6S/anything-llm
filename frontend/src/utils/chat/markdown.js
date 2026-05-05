@@ -1,6 +1,7 @@
 import { encode as HTMLEncode } from "he";
 import markdownIt from "markdown-it";
 import markdownItKatexPlugin from "./plugins/markdown-katex";
+import markdownCitationsPlugin from "./plugins/markdown-citations";
 import Appearance from "@/models/appearance";
 import hljs from "highlight.js";
 import "./themes/github-dark.css";
@@ -77,6 +78,7 @@ markdown.renderer.rules.image = function (tokens, idx) {
 };
 
 markdown.use(markdownItKatexPlugin);
+markdown.use(markdownCitationsPlugin);
 
 export default function renderMarkdown(text = "") {
   return markdown.render(text);

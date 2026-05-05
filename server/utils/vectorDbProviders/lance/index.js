@@ -190,6 +190,13 @@ class LanceDb extends VectorDatabase {
       .limit(topN)
       .toArray();
 
+    // DEBUG: Log first item returned from LanceDB
+    if (response.length > 0) {
+      console.log("[DEBUG LanceDB Retrieval] First item keys:", Object.keys(response[0]));
+      console.log("[DEBUG LanceDB Retrieval] page_number:", response[0].page_number);
+      console.log("[DEBUG LanceDB Retrieval] loc:", response[0].loc);
+    }
+    
     response.forEach((item) => {
       if (this.distanceToSimilarity(item._distance) < similarityThreshold)
         return;
@@ -306,7 +313,15 @@ class LanceDb extends VectorDatabase {
   ) {
     const { DocumentVectors } = require("../../../models/vectors");
     try {
-      const { pageContent, docId, ...metadata } = documentData;
+      // Extract pageData separately - we use it for splitting but DON'T store it in vector DB
+      // (it's too large and causes schema mismatches in LanceDB)
+      const { 
+        pageContent, 
+        docId, 
+        pageData: documentPageData,  // Extract separately, don't include in metadata spread
+        historical_metadata: _historicalMeta, // Also exclude - stored in document table, not needed per chunk
+        ...metadata 
+      } = documentData;
       if (!pageContent || pageContent.length == 0) return false;
 
       this.logger("Adding new vectorized document into namespace", namespace);
@@ -321,9 +336,10 @@ class LanceDb extends VectorDatabase {
           for (const chunk of chunks) {
             chunk.forEach((chunk) => {
               const id = uuidv4();
-              const { id: _id, ...metadata } = chunk.metadata;
+              // Also exclude pageData and historical_metadata from cached chunks
+              const { id: _id, pageData: _pd, historical_metadata: _hm, ...chunkMeta } = chunk.metadata;
               documentVectors.push({ docId, vectorId: id });
-              submissions.push({ id: id, vector: chunk.values, ...metadata });
+              submissions.push({ id: id, vector: chunk.values, ...chunkMeta });
             });
           }
 
@@ -338,23 +354,48 @@ class LanceDb extends VectorDatabase {
       // because we then cannot atomically control our namespace to granularly find/remove documents
       // from vectordb.
       const EmbedderEngine = getEmbeddingEngineSelection();
-      const textSplitter = new TextSplitter({
-        chunkSize: TextSplitter.determineMaxChunkSize(
-          await SystemSettings.getValueOrFallback({
-            label: "text_splitter_chunk_size",
-          }),
-          EmbedderEngine?.embeddingMaxChunkLength
-        ),
-        chunkOverlap: await SystemSettings.getValueOrFallback(
-          { label: "text_splitter_chunk_overlap" },
-          20
-        ),
-        chunkHeaderMeta: TextSplitter.buildHeaderMeta(metadata),
-        chunkPrefix: EmbedderEngine?.embeddingPrefix,
-      });
-      const textChunks = await textSplitter.splitText(pageContent);
+      // Use page-based splitting for PDFs (guaranteed accurate page numbers)
+      // Falls back to regular splitting for non-PDF documents
+      const pageData = documentPageData || [];
+      const { splitByPagesCompatible } = require("../../helpers/chat/pageBasedSplitter");
+      
+      const chunkSize = TextSplitter.determineMaxChunkSize(
+        await SystemSettings.getValueOrFallback({
+          label: "text_splitter_chunk_size",
+        }),
+        EmbedderEngine?.embeddingMaxChunkLength
+      );
+      const chunkOverlap = await SystemSettings.getValueOrFallback(
+        { label: "text_splitter_chunk_overlap" },
+        20
+      );
 
-      this.logger("Snippets created from document:", textChunks.length);
+      let textChunks;
+      let chunkPageNumbers;
+
+      if (pageData.length > 0) {
+        // PDF with page data - use page-based splitting for accurate page numbers
+        this.logger(`[PAGE-BASED SPLIT] Document has ${pageData.length} pages`);
+        const result = await splitByPagesCompatible(pageContent, pageData, {
+          chunkSize,
+          chunkOverlap,
+        });
+        textChunks = result.texts;
+        chunkPageNumbers = result.pageNumbers;
+        this.logger(`[PAGE-BASED SPLIT] Created ${textChunks.length} chunks with accurate page numbers`);
+      } else {
+        // Non-PDF or no page data - use regular text splitter
+        const textSplitter = new TextSplitter({
+          chunkSize,
+          chunkOverlap,
+          chunkHeaderMeta: TextSplitter.buildHeaderMeta(metadata),
+          chunkPrefix: EmbedderEngine?.embeddingPrefix,
+        });
+        textChunks = await textSplitter.splitText(pageContent);
+        chunkPageNumbers = textChunks.map(() => null);
+        this.logger("Snippets created from document:", textChunks.length);
+      }
+
       const documentVectors = [];
       const vectors = [];
       const submissions = [];
@@ -362,13 +403,28 @@ class LanceDb extends VectorDatabase {
 
       if (!!vectorValues && vectorValues.length > 0) {
         for (const [i, vector] of vectorValues.entries()) {
+          // Add page number to metadata if available
+          const chunkMetadata = {
+            ...metadata,
+            text: textChunks[i],
+          };
+          
+          // Add page number fields if we have them
+          if (chunkPageNumbers[i] !== null) {
+            chunkMetadata.loc = { 
+              ...(chunkMetadata.loc || {}),
+              pageNumber: chunkPageNumbers[i] 
+            };
+            chunkMetadata.page_number = chunkPageNumbers[i];
+          }
+          
           const vectorRecord = {
             id: uuidv4(),
             values: vector,
             // [DO NOT REMOVE]
             // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
             // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunks[i] },
+            metadata: chunkMetadata,
           };
 
           vectors.push(vectorRecord);
@@ -390,6 +446,13 @@ class LanceDb extends VectorDatabase {
         for (const chunk of toChunks(vectors, 500)) chunks.push(chunk);
 
         this.logger("Inserting vectorized chunks into LanceDB collection.");
+        
+        // DEBUG: Log what we're actually storing
+        const sampleSubmission = submissions[0];
+        console.log("[DEBUG LanceDB] Sample submission keys:", Object.keys(sampleSubmission));
+        console.log("[DEBUG LanceDB] Sample page_number:", sampleSubmission.page_number);
+        console.log("[DEBUG LanceDB] Sample loc:", sampleSubmission.loc);
+        
         const { client } = await this.connect();
         await this.updateOrCreateCollection(client, submissions, namespace);
         await storeVectorResult(chunks, fullFilePath);

@@ -12,6 +12,10 @@ const {
   recentChatHistory,
   sourceIdentifier,
 } = require("./index");
+const {
+  formatContextWithCitations,
+  getCitationInstruction,
+} = require("../helpers/chat/citedContext");
 
 const VALID_CHAT_MODE = ["chat", "query"];
 
@@ -112,20 +116,35 @@ async function streamChatWithWorkspace(
   // it will undergo prompt compression anyway to make it work. If there is so much pinned that the context here is bigger than
   // what the model can support - it would get compressed anyway and that really is not the point of pinning. It is really best
   // suited for high-context models.
+  // 
+  // Now using pinnedDocsWithPageChunks() to split pinned docs by page for citation support.
+  // This preserves the "always included" nature while enabling page-level citations like vector search results.
   await new DocumentManager({
     workspace,
     maxTokens: LLMConnector.promptWindowLimit(),
   })
-    .pinnedDocs()
-    .then((pinnedDocs) => {
-      pinnedDocs.forEach((doc) => {
-        const { pageContent, ...metadata } = doc;
-        pinnedDocIdentifiers.push(sourceIdentifier(doc));
-        contextTexts.push(doc.pageContent);
+    .pinnedDocsWithPageChunks()
+    .then((pinnedChunks) => {
+      // Track which documents we've seen to build the filter list
+      const seenDocIds = new Set();
+      
+      pinnedChunks.forEach((chunk) => {
+        const { pageContent, loc, ...metadata } = chunk;
+        
+        // Add to filter list (use document ID to filter all chunks from same doc in vector search)
+        // This prevents duplicate content from both pinned and vector search results
+        if (metadata.id && !seenDocIds.has(metadata.id)) {
+          pinnedDocIdentifiers.push(sourceIdentifier(chunk));
+          seenDocIds.add(metadata.id);
+        }
+        
+        contextTexts.push(pageContent);
         sources.push({
           text:
             pageContent.slice(0, 1_000) +
             "...continued on in source document...",
+          // Include loc for page number extraction in citations
+          loc,
           ...metadata,
         });
       });
@@ -226,13 +245,20 @@ async function streamChatWithWorkspace(
     return;
   }
 
+  // Format context texts with source citations so LLM can cite them
+  const citedContextTexts = formatContextWithCitations(contextTexts, sources);
+  
+  // Get base system prompt and add citation instruction
+  const basePrompt = await chatPrompt(workspace, user);
+  const systemPromptWithCitations = basePrompt + getCitationInstruction();
+
   // Compress & Assemble message to ensure prompt passes token limit with room for response
   // and build system messages based on inputs and history.
   const messages = await LLMConnector.compressMessages(
     {
-      systemPrompt: await chatPrompt(workspace, user),
+      systemPrompt: systemPromptWithCitations,
       userPrompt: updatedMessage,
-      contextTexts,
+      contextTexts: citedContextTexts,
       chatHistory,
       attachments,
     },
